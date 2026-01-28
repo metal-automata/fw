@@ -224,32 +224,41 @@ func (obj *Installer) reOpenConnection(ctx context.Context) error {
 }
 
 // TODO: this needs to match Component hardware model as well - for drives, nics etc
-func (obj *Installer) installedVersionEqual(ctx context.Context) error {
+func (obj *Installer) getVersion(ctx context.Context) (string, error) {
 	inv, err := obj.client.PreferProvider(obj.Vendor).Inventory(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to collect device inventory: %w", err)
+		return "", fmt.Errorf("failed to collect device inventory: %w", err)
 	}
 
 	if inv.Vendor == "" || strings.ToLower(obj.Vendor) != strings.ToLower(inv.Vendor) {
-		return fmt.Errorf("device vendor mismatch: '%s' != '%s'", inv.Vendor, obj.Vendor)
+		return "", fmt.Errorf("device vendor mismatch: '%s' != '%s'", inv.Vendor, obj.Vendor)
 	}
 
 	if inv.BMC == nil {
-		return fmt.Errorf("bmc inventory nil")
+		return "", fmt.Errorf("bmc inventory nil")
 	}
 
 	if inv.BMC.Firmware == nil {
-		return fmt.Errorf("bmc firmware inventory")
+		return "", fmt.Errorf("bmc firmware inventory")
 	}
 
 	if inv.BMC.Firmware.Installed == "" {
-		return fmt.Errorf("bmc firmware Version unknown")
+		return "", fmt.Errorf("bmc firmware Version unknown")
 	}
 
-	if inv.BMC.Firmware.Installed != obj.Version {
+	return inv.BMC.Firmware.Installed, nil
+}
+
+func (obj *Installer) installedVersionEqual(ctx context.Context) error {
+	version, err := obj.getVersion(ctx)
+	if err != nil {
+		return err
+	}
+
+	if version != obj.Version {
 		slog.Debug(
 			"installed Version does not match expected",
-			slog.String("current", inv.BMC.Firmware.Installed),
+			slog.String("current", version),
 		)
 
 		return ErrInstalledFirmwareNotEqual
