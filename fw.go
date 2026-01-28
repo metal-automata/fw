@@ -17,10 +17,8 @@ import (
 	"github.com/bmc-toolbox/bmclib/v2/constants"
 	"github.com/bmc-toolbox/bmclib/v2/providers"
 	"github.com/bmc-toolbox/common"
-	"github.com/bombsimon/logrusr/v2"
 	"github.com/hashicorp/go-multierror"
 	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
 	"golang.org/x/net/publicsuffix"
 )
 
@@ -75,15 +73,20 @@ type Installer struct {
 	Version      string
 	FirmwareFile string
 
+	// Debug represents if we're running in debug mode or not.
+	Debug bool
+
+	// Logf is a logger which should be used.
+	Logf func(format string, v ...interface{})
+
 	client *bmclib.Client
-	logger *slog.Logger
 }
 
 // Connect must be run before using Install or GetVersion.
 func (obj *Installer) Connect(ctx context.Context) error {
 	// when no logger is defined, we default to logging at debug level
-	if obj.logger == nil {
-		obj.logger = slog.New(
+	if obj.Logf == nil {
+		logger := slog.New(
 			slog.NewJSONHandler(
 				os.Stdout,
 				&slog.HandlerOptions{
@@ -91,16 +94,13 @@ func (obj *Installer) Connect(ctx context.Context) error {
 				},
 			),
 		)
+		obj.Logf = func(format string, v ...interface{}) {
+			if obj.Debug {
+				logger.Debug(format, v...)
+			}
+			logger.Info(format, v...)
+		}
 	}
-
-	obj.logger = obj.logger.With(
-		slog.String("Component", obj.Component),
-		slog.String("want", obj.Version),
-		slog.String("bmc", obj.BMCAddr),
-		slog.Bool("DryRun", obj.DryRun),
-	)
-
-	slog.SetDefault(obj.logger)
 
 	obj.client = newClient(obj.BMCAddr, obj.Username, obj.Password)
 
@@ -190,15 +190,10 @@ func newHTTPClient() *http.Client {
 // newClient initializes a bmclib client with the given credentials.
 func newClient(BMCAddr, Username, Password string) *bmclib.Client {
 
-	l := logrus.New()
-	l.Level = logrus.DebugLevel
-	logger := logrusr.New(l)
-
 	bmcClient := bmclib.NewClient(
 		BMCAddr,
 		Username,
 		Password,
-		bmclib.WithLogger(logger),
 		bmclib.WithHTTPClient(newHTTPClient()),
 		bmclib.WithPerProviderTimeout(loginTimeout),
 		bmclib.WithRedfishEtagMatchDisabled(true),
@@ -218,10 +213,7 @@ func newClient(BMCAddr, Username, Password string) *bmclib.Client {
 func (obj *Installer) reOpenConnection(ctx context.Context) error {
 	// doesn't matter if the connection close fails here
 	if err := obj.client.Close(ctx); err != nil {
-		slog.Warn(
-			"connection close error",
-			slog.Any("msg", err),
-		)
+		obj.Logf("connection close error: %v", err)
 	}
 
 	obj.client = newClient(obj.BMCAddr, obj.Username, obj.Password)
@@ -263,10 +255,9 @@ func (obj *Installer) installedVersionEqual(ctx context.Context) error {
 	}
 
 	if version != obj.Version {
-		slog.Debug(
-			"installed Version does not match expected",
-			slog.String("current", version),
-		)
+		if obj.Debug {
+			obj.Logf("installed Version does not match expected, current: %s", version)
+		}
 
 		return ErrInstalledFirmwareNotEqual
 	}
@@ -281,7 +272,9 @@ func (obj *Installer) upload(ctx context.Context) (string, error) {
 	}
 	defer fh.Close()
 
-	slog.Debug("uploading firmware")
+	if obj.Debug {
+		obj.Logf("uploading firmware")
+	}
 	if obj.DryRun {
 		return "", nil
 	}
@@ -295,7 +288,9 @@ func (obj *Installer) upload(ctx context.Context) (string, error) {
 }
 
 func (obj *Installer) installUploaded(ctx context.Context, uploadTaskID string) (string, error) {
-	slog.Debug("install uploaded firmware")
+	if obj.Debug {
+		obj.Logf("install uploaded firmware")
+	}
 	if obj.DryRun {
 		return "", nil
 	}
@@ -358,13 +353,17 @@ func (obj *Installer) installStatus(
 		// TODO: break into its own method
 		if inventory {
 			verifyAttempts++
-			slog.Debug("verifying firmware Version is installed")
+			if obj.Debug {
+				obj.Logf("verifying firmware Version is installed")
+			}
 			err := obj.installedVersionEqual(ctx)
 			// nolint:errorlint // default case catches misc errors
 			// TODO: use errors.Is
 			switch err {
 			case nil:
-				slog.Debug("Installed firmware matches expected.")
+				if obj.Debug {
+					obj.Logf("installed firmware matches expected")
+				}
 
 				return nil
 
@@ -379,13 +378,10 @@ func (obj *Installer) installStatus(
 			default:
 				// includes errors - ErrInstalledVersionUnknown, ErrComponentNotFound
 				attemptErrors = multierror.Append(attemptErrors, err)
-				slog.Warn(
-					"inventory collection to verify Component firmware returned error",
-					slog.String("elapsed", time.Since(startTS).String()),
-					slog.String("attempts", fmt.Sprintf("attempt %d/%d", attempts, maxPollStatusAttempts)),
-					slog.Any("err", err),
-				)
-
+				obj.Logf("inventory collection to verify Component firmware returned error")
+				obj.Logf("elapsed: %s", time.Since(startTS).String())
+				obj.Logf("attempt: %d/%d", attempts, maxPollStatusAttempts)
+				obj.Logf("err: %s", err)
 			}
 
 			continue
@@ -400,14 +396,14 @@ func (obj *Installer) installStatus(
 			obj.Version,
 		)
 
-		slog.Debug(
-			"firmware install status query",
-			slog.String("elapsed", time.Since(startTS).String()),
-			slog.String("attempts", fmt.Sprintf("attempt %d/%d", attempts, maxPollStatusAttempts)),
-			slog.String("taskState", string(state)),
-			slog.String("bmcTaskID", prevTaskID),
-			slog.String("status", status),
-		)
+		if obj.Debug {
+			obj.Logf("firmware install status query")
+			obj.Logf("elapsed: %s", time.Since(startTS).String())
+			obj.Logf("attempt: %d/%d", attempts, maxPollStatusAttempts)
+			obj.Logf("taskState: %s", string(state))
+			obj.Logf("bmcTaskID: %s", prevTaskID)
+			obj.Logf("status: %s", status)
+		}
 
 		// error check returns when maxPollStatusAttempts have been reached
 		if err != nil {
@@ -426,14 +422,14 @@ func (obj *Installer) installStatus(
 			// And so if we get an error and its a BMC Component that was being updated, we wait for
 			// the BMC to be available again and validate its firmware matches the one expected.
 			if componentIsBMC(obj.Component) {
-				slog.Debug(
-					"BMC task status lookup returned error",
-					slog.String("delay", delayBMCReset.String()),
-					slog.String("taskState", string(state)),
-					slog.String("bmcTaskID", prevTaskID),
-					slog.String("status", status),
-					slog.String("err", err.Error()),
-				)
+				if obj.Debug {
+					obj.Logf("BMC task status lookup returned error")
+					obj.Logf("delay: %s", delayBMCReset.String())
+					obj.Logf("taskState: %s", string(state))
+					obj.Logf("bmcTaskID: %s", prevTaskID)
+					obj.Logf("status: %s", status)
+					obj.Logf("err: %s", err.Error())
+				}
 
 				inventory = true
 			}
@@ -491,16 +487,12 @@ func (obj *Installer) installStatus(
 			// A BMC reset is required if the BMC install fails - to get it out of flash mode
 			if componentIsBMC(obj.Component) && bmcResetOnInstallFailure {
 				if err := obj.resetBMC(ctx); err != nil {
-					slog.Warn(
-						"install failure required a BMC reset, reset returned error",
-						slog.String("err", err.Error()),
-					)
+					obj.Logf("install failure required a BMC reset, reset returned error")
+					obj.Logf("err: %s", err.Error())
 				}
 
-				slog.Warn(
-					"failed to reset BMC after BMC firmware install failure",
-					slog.Any("err", err.Error()),
-				)
+				obj.Logf("failed to reset BMC after BMC firmware install failure")
+				obj.Logf("err: %s", err.Error())
 			}
 
 			return fmt.Errorf("firmware install failed: %s", errMsg)
@@ -513,27 +505,22 @@ func (obj *Installer) installStatus(
 				inventory = true
 				// re-initialize the client to make sure we're not re-using old sessions.
 				if err := obj.reOpenConnection(ctx); err != nil {
-					slog.Error(
-						"failed to re-open BMC connection",
-						slog.String("bmc", obj.BMCAddr),
-						slog.String("Component", obj.Component),
-						slog.Any("err", err.Error()),
-					)
+					obj.Logf("failed to re-open BMC connection")
+					obj.Logf("bmc: %s", obj.BMCAddr)
+					obj.Logf("component: %s", obj.Component)
+					obj.Logf("err: %s", err.Error())
 
 					return err
 				}
 
 				if bmcResetPostInstall {
 					if errBmcReset := obj.resetBMC(ctx); errBmcReset != nil {
-						slog.Error(
-							"install success required a BMC reset, reset returned error",
-							slog.Any("err", err),
-						)
+						obj.Logf("install success required a BMC reset, reset returned error: %v", err)
 					}
 
-					slog.Debug(
-						"BMC was reset for firwmare install",
-					)
+					if obj.Debug {
+						obj.Logf("BMC was reset for firwmare install")
+					}
 				}
 
 				continue
@@ -548,10 +535,8 @@ func (obj *Installer) installStatus(
 }
 
 func (obj *Installer) resetBMC(ctx context.Context) error {
-	slog.Info(
-		"resetting BMC, adding delay for BMC to be ready",
-		slog.String("delay", delayBMCReset.String()),
-	)
+	obj.Logf("resetting BMC, adding delay for BMC to be ready")
+	obj.Logf("delay: %s", delayBMCReset.String())
 
 	if obj.DryRun {
 		return nil
@@ -565,9 +550,7 @@ func (obj *Installer) resetBMC(ctx context.Context) error {
 }
 
 func (obj *Installer) powerCycleServer(ctx context.Context) error {
-	slog.Info(
-		"power cycling host for firmware install",
-	)
+	obj.Logf("power cycling host for firmware install")
 
 	if obj.DryRun {
 		return nil
