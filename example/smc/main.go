@@ -25,6 +25,23 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
+	if err := installer.Connect(ctx); err != nil {
+		slog.Error("connect error", slog.Any("msg", err))
+		os.Exit(1)
+	}
+	defer func() {
+		if err := installer.Close(context.Background()); err != nil {
+			slog.Error("close error", slog.Any("msg", err))
+		}
+	}()
+
+	if version, err := installer.GetVersion(ctx); err != nil {
+		slog.Error("install error", slog.Any("msg", err))
+		os.Exit(1)
+	} else {
+		slog.Info("version", slog.String("version", version))
+	}
+
 	if err := installer.Install(ctx); err != nil {
 		slog.Error("install error", slog.Any("msg", err))
 		os.Exit(1)
