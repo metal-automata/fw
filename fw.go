@@ -63,7 +63,8 @@ var (
 	ErrInstalledFirmwareNotEqual = errors.New("installed Version does not match new")
 )
 
-// Installer provides the Install method to apply a firmware install.
+// Installer provides the Install method to apply a firmware install. The
+// methods are not thread-safe.
 type Installer struct {
 	DryRun       bool
 	BMCAddr      string
@@ -78,8 +79,8 @@ type Installer struct {
 	logger *slog.Logger
 }
 
-// Install runs the firmware install.
-func (obj *Installer) Install(ctx context.Context) error {
+// Connect must be run before using Install or GetVersion.
+func (obj *Installer) Connect(ctx context.Context) error {
 	// when no logger is defined, we default to logging at debug level
 	if obj.logger == nil {
 		obj.logger = slog.New(
@@ -107,14 +108,18 @@ func (obj *Installer) Install(ctx context.Context) error {
 		return err
 	}
 
-	defer func() {
-		// context not used here on purpose XXX: WHY?
-		if err := obj.client.Close(context.Background()); err != nil {
-			slog.Error("bmc connection close error", slog.Any("msg", err))
-		}
-	}()
+	return nil
+}
 
-	steps, err := obj.client.For(obj.Vendor).FirmwareInstallSteps(ctx, "bmc")
+// Close the connection when done. This is important to avoid leaks.
+func (obj *Installer) Close(ctx context.Context) error {
+	return obj.client.Close(ctx)
+}
+
+// Install runs the firmware install. Connect must be called before using this.
+func (obj *Installer) Install(ctx context.Context) error {
+
+	steps, err := obj.client.PreferProvider(obj.Vendor).FirmwareInstallSteps(ctx, "bmc")
 	if err != nil {
 		return fmt.Errorf("failed to identify firmware install steps: %w", err)
 	}
@@ -223,8 +228,10 @@ func (obj *Installer) reOpenConnection(ctx context.Context) error {
 	return obj.client.Open(ctx)
 }
 
+// GetVersion reads the current BMC version. Connect must be called before using
+// this.
 // TODO: this needs to match Component hardware model as well - for drives, nics etc
-func (obj *Installer) getVersion(ctx context.Context) (string, error) {
+func (obj *Installer) GetVersion(ctx context.Context) (string, error) {
 	inv, err := obj.client.PreferProvider(obj.Vendor).Inventory(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to collect device inventory: %w", err)
@@ -250,7 +257,7 @@ func (obj *Installer) getVersion(ctx context.Context) (string, error) {
 }
 
 func (obj *Installer) installedVersionEqual(ctx context.Context) error {
-	version, err := obj.getVersion(ctx)
+	version, err := obj.GetVersion(ctx)
 	if err != nil {
 		return err
 	}
