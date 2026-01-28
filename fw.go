@@ -114,14 +114,6 @@ func (obj *Installer) Install(ctx context.Context) error {
 		}
 	}()
 
-	if err := obj.installedVersionEqual(ctx); err == nil {
-		slog.Debug("nothing to do here")
-		return nil
-
-	} else if err != nil && !errors.Is(err, ErrInstalledFirmwareNotEqual) {
-		return err
-	}
-
 	steps, err := obj.client.For(obj.Vendor).FirmwareInstallSteps(ctx, "bmc")
 	if err != nil {
 		return fmt.Errorf("failed to identify firmware install steps: %w", err)
