@@ -215,7 +215,6 @@ func newClient(BMCAddr, Username, Password string) *bmclib.Client {
 		Username,
 		Password,
 		bmclib.WithHTTPClient(newHTTPClient()),
-		bmclib.WithPerProviderTimeout(loginTimeout),
 		bmclib.WithRedfishEtagMatchDisabled(true),
 	)
 
