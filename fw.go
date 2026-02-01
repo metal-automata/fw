@@ -72,9 +72,10 @@ type Installer struct {
 	// Run install in dry run
 	// steps through the install process without affecting changes on the device
 	DryRun bool
-	// BMC address - IP/Hostname
 
+	// BMC address - IP/Hostname
 	BMCAddr string
+
 	// BMC Username
 	Username string
 
@@ -138,7 +139,6 @@ func (obj *Installer) Close(ctx context.Context) error {
 
 // Install runs the firmware install. Connect must be called before using this.
 func (obj *Installer) Install(ctx context.Context) error {
-
 	steps, err := obj.client.PreferProvider(obj.Vendor).FirmwareInstallSteps(ctx, "bmc")
 	if err != nil {
 		return fmt.Errorf("failed to identify firmware install steps: %w", err)
@@ -251,7 +251,7 @@ func (obj *Installer) reOpenConnection(ctx context.Context, maxAttempts int) err
 		}
 
 		obj.Logf(
-			"connection re-open error, %d/%d attempts",
+			"connection re-open error, attempt %d of %d",
 			attempts,
 			maxAttempts,
 		)
@@ -383,12 +383,13 @@ func (obj *Installer) installStatus(
 
 		// return when attempts exceed maxPollStatusAttempts
 		if attempts >= maxPollStatusAttempts {
-			attemptErrors = multierror.Append(attemptErrors, fmt.Errorf(
-				"bmc query threshold attempts error",
-				"%d attempts querying FirmwareTaskStatus(), elapsed: %s",
-				attempts,
-				time.Since(startTS).String(),
-			))
+			attemptErrors = multierror.Append(attemptErrors,
+				fmt.Errorf(
+					"bmc query threshold error %d attempts querying install status, elapsed: %s",
+					attempts,
+					time.Since(startTS).String(),
+				),
+			)
 
 			return attemptErrors
 		}
