@@ -55,6 +55,11 @@ const (
 	//
 	// 30 (maxVerifyAttempts) * 10 (delayPollStatus) = 300s (5 minutes)
 	maxVerifyAttempts = 30
+
+	// maxConnectReopenAttempts is the count of times to retry opening the BMC connection
+	// this applies to after the BMC has applied an update and has gone for a reset
+	// the delayPollStatus is applied in between each attempt.
+	maxConnectionReopenAttempts = 15
 )
 
 var (
@@ -64,13 +69,28 @@ var (
 // Installer provides the Install method to apply a firmware install. The
 // methods are not thread-safe.
 type Installer struct {
-	DryRun       bool
-	BMCAddr      string
-	Username     string
-	Password     string
-	Vendor       string
-	Component    string
-	Version      string
+	// Run install in dry run
+	// steps through the install process without affecting changes on the device
+	DryRun bool
+	// BMC address - IP/Hostname
+
+	BMCAddr string
+	// BMC Username
+	Username string
+
+	// BMC Password
+	Password string
+
+	// Server vendor name - supermicro/dell/etc
+	Vendor string
+
+	// Target component slug
+	Component string
+
+	// Version of the firmware being installed
+	Version string
+
+	// The full path to the firmware blob to be installed
 	FirmwareFile string
 
 	// Debug represents if we're running in debug mode or not.
@@ -210,14 +230,37 @@ func newClient(BMCAddr, Username, Password string) *bmclib.Client {
 	return bmcClient
 }
 
-func (obj *Installer) reOpenConnection(ctx context.Context) error {
+// reOpenConnection re-initialize the bmclib client
+//
+// This is invoked after a BMC firmware update, at which point the BMC
+// is resetting itself, upto maxAttempts attempts will be made with a delay of upto delayPollStatus
+func (obj *Installer) reOpenConnection(ctx context.Context, maxAttempts int) error {
 	// doesn't matter if the connection close fails here
+	// as the BMC may not be available
 	if err := obj.client.Close(ctx); err != nil {
 		obj.Logf("connection close error: %v", err)
 	}
 
 	obj.client = newClient(obj.BMCAddr, obj.Username, obj.Password)
-	return obj.client.Open(ctx)
+
+	var attempts int
+	for i := 1; i <= maxAttempts; i++ {
+		if err := obj.client.Open(ctx); err == nil {
+			obj.Logf("bmc connection re-opened")
+			return nil
+		}
+
+		obj.Logf(
+			"connection re-open error, %d/%d attempts",
+			attempts,
+			maxAttempts,
+		)
+
+		sleepContext(ctx, delayPollStatus)
+	}
+
+	// at this point, we've exceeded max attempts to open the BMC connection
+	return fmt.Errorf("failed to re-open BMC connection after %d attempts", maxAttempts)
 }
 
 // GetVersion reads the current BMC version. Connect must be called before using
@@ -504,7 +547,7 @@ func (obj *Installer) installStatus(
 			if componentIsBMC(obj.Component) {
 				inventory = true
 				// re-initialize the client to make sure we're not re-using old sessions.
-				if err := obj.reOpenConnection(ctx); err != nil {
+				if err := obj.reOpenConnection(ctx, maxConnectionReopenAttempts); err != nil {
 					obj.Logf("failed to re-open BMC connection")
 					obj.Logf("bmc: %s", obj.BMCAddr)
 					obj.Logf("component: %s", obj.Component)
